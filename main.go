@@ -1,16 +1,16 @@
-package main
+package main // Defines this file as an executable program.
 
 import (
-	"context"
-	// "encoding/json"
-	"fmt"
-	"log"
+	"context" 
+	// "encoding/json" // Used to encode and decode JSON data.
+	"fmt" // package for printing
+	"log"  // Logs messages to the console with timestamps and severity levels.
 	"time"
-	"strings"
+	"strings" // Provides utility functions for string manipulation.
 	
-	"github.com/jackc/pgx/v5"
-	"github.com/labstack/echo/v4"
-	"github.com/redis/go-redis/v9"
+	"github.com/jackc/pgx/v5" // PostgreSQL driver for Go
+	"github.com/labstack/echo/v4" // Web framework for handling HTTP requests and building APIs.
+	"github.com/redis/go-redis/v9" // Redis client for caching and real-time data handling.
 	"github.com/google/uuid"
 )
 
@@ -18,17 +18,18 @@ import (
 var (
 	conn     *pgx.Conn  // db connection
 	redisCli *redis.Client // redis connection
-	ctx      = context.Background()
+	ctx      = context.Background() // Global context used to manage request-scoped values, deadlines, and cancellation signals.
 )
 
-// Message struct for input
+// Message struct for input (like a blueprint for objects)
 type Message struct {
+	// Field Type Tag
 	MessageID    string    `json:"message_id"`
 	SenderID     string    `json:"sender_id"`
 	ReceiverID   string    `json:"receiver_id"`
 	Content      string    `json:"content"`
-	Timestamp    time.Time `json:"-"`
-	TimestampStr string    `json:"timestamp"`
+	Timestamp    time.Time `json:"-"`    // Timestamp is skipped when converting to JSON because it's not needed in the response directly.
+	TimestampStr string    `json:"timestamp"` // Instead, TimestampStr is used to convert it into a readable string format before sending it to the client.
 	Read         bool      `json:"read"`
 }
 
@@ -36,20 +37,25 @@ type Message struct {
 func main() {
 	//! Connect to PostgreSQL
 	var err error
-	connString := "postgres://postgres:7591achu@localhost:5432/messaging"
+	connString := "postgres://postgres:7591achu@localhost:5432/messaging" // Connection string to postgres
 	conn, err = pgx.Connect(context.Background(), connString)
 	if err != nil {
-		log.Fatalf("Unable to connect to database: %v\n", err)
+		log.Fatalf("Unable to connect to database: %v\n", err) // If the connection fails, logs an error and exits.
 	}
-	defer conn.Close(context.Background())
+	defer conn.Close(context.Background()) // Closes the connection when the function exits.
 	fmt.Println("Connected to PostgreSQL!")
 	fmt.Println()
+
+	//----------------------------------------------
+
 	//! Connect to Redis
+	// create a new redis client
 	redisCli = redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379", // Default Redis port
 		Password: "",               // No password
 		DB:       0,                // Default DB
 	})
+	//  Sends a ping to Redis to check the connection
 	_, err = redisCli.Ping(context.Background()).Result()
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis: %v\n", err)
@@ -57,10 +63,11 @@ func main() {
 	fmt.Println("Connected to Redis!")
 	fmt.Println()
 
+	//----------------------------------------------
 
-	// Initialize Echo
-	e := echo.New()
-
+	// Initialize Echo (for handling HTTP requests)
+	e := echo.New() // sets up a lightweight HTTP server.
+ 
 	// Define routes
 	e.POST("/messages", sendMessage)
 	e.GET("/messages", getMessages)
@@ -69,12 +76,12 @@ func main() {
 
 
 	// Start worker in a separate goroutine
-	//! The go keyword starts the worker in a separate goroutine.
+	//! The go keyword starts the worker in a separate goroutine  (like a background thread).
 	//! This allows the server and worker to run concurrently without blocking each other.
 	go startWorker()
 
-	// Start server at 8080 or Change to any free port
-	e.Logger.Fatal(e.Start(":8080"))
+	// Start Echo server at 8080 or Change to any free port 
+	e.Logger.Fatal(e.Start(":8080")) //  Fatal - If the server fails to start, logs an error and exits.
 }
 
 //! Handles sending a message (need asynchronous with a queue (redis Lists)) - working
@@ -234,25 +241,26 @@ func markMessageAsRead(c echo.Context) error {
 	return c.JSON(200, map[string]string{"status": "Message marked as read"})
 }
 
-// //! Handles deleting a message
-// func deleteMessage(c echo.Context) error {
-// 	id := c.Param("id")
+// //! Handles deleting a message - working
+func deleteMessage(c echo.Context) error {
+	// fetch the id from the parameter passed during the request
+	id := c.Param("id")
 
-// 	// SQL query to delete the message by ID
-// 	query := `DELETE FROM messages WHERE message_id = $1`
-// 	result, err := conn.Exec(context.Background(), query, id)
-// 	if err != nil {
-// 		log.Printf("Failed to delete message: %v", err)
-// 		return c.JSON(500, map[string]string{"error": "Failed to delete message"})
-// 	}
+	// SQL query to delete the message by ID
+	query := `DELETE FROM messages WHERE message_id = $1` // $1 is a positional placeholder used in PostgreSQL for parameterized queries.
+	result, err := conn.Exec(context.Background(), query, id) //  binds the id value to $1 safely (prevents SQL Injection)
+	if err != nil {
+		log.Printf("Failed to delete message: %v", err)
+		return c.JSON(500, map[string]string{"error": "Failed to delete message"})
+	}
 
-// 	// Check if any rows were affected
-// 	if result.RowsAffected() == 0 {
-// 		return c.JSON(404, map[string]string{"error": "Message not found"})
-// 	}
+	// Check if any rows were affected
+	if result.RowsAffected() == 0 {
+		return c.JSON(404, map[string]string{"error": "Message not found"})
+	}
 
-// 	return c.JSON(200, map[string]string{"status": "Message deleted"})
-// }
+	return c.JSON(200, map[string]string{"status": "Message deleted"})
+}
 
 
 //! Process messages from the Redis queue and store them in PostgreSQL (for redis List)
