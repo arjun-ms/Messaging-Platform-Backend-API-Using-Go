@@ -23,14 +23,15 @@ var (
 
 // Message struct for input
 type Message struct {
-	MessageID  int    `json:"message_id"`
-	SenderID   string `json:"sender_id"`
-	ReceiverID string `json:"receiver_id"`
-	Content    string `json:"content"`
-	Timestamp   time.Time `json:"-"`
-	TimestampStr string   `json:"timestamp"`
-	Read       bool   `json:"read"`
+	MessageID    string    `json:"message_id"`
+	SenderID     string    `json:"sender_id"`
+	ReceiverID   string    `json:"receiver_id"`
+	Content      string    `json:"content"`
+	Timestamp    time.Time `json:"-"`
+	TimestampStr string    `json:"timestamp"`
+	Read         bool      `json:"read"`
 }
+
 
 func main() {
 	//! Connect to PostgreSQL
@@ -64,7 +65,7 @@ func main() {
 	e.POST("/messages", sendMessage)
 	e.GET("/messages", getMessages)
 	e.PATCH("/messages/:id/read", markMessageAsRead)
-	// e.DELETE("/messages/:id", deleteMessage)
+	e.DELETE("/messages/:id", deleteMessage)
 
 
 	// Start worker in a separate goroutine
@@ -107,7 +108,7 @@ func main() {
 // }
 
 
-//! sendMessage (Using Redis Streams)
+//! sendMessage (Using Redis Streams) - working
 func sendMessage(c echo.Context) error {
 	var msg Message
 	if err := c.Bind(&msg); err != nil {
@@ -142,12 +143,31 @@ func sendMessage(c echo.Context) error {
 }
 
 
-//! Handles retrieving conversation history - working
+//! Handles retrieving conversation history between two users by using an SQL query - working
 func getMessages(c echo.Context) error {
 	log.Println("Starting to read messages from database...") // Debug log
 
-	// Define a SQL query to fetch messages from the database
-	rows, err := conn.Query(context.Background(), "SELECT message_id, sender_id, receiver_id, content, timestamp, read FROM messages ORDER BY timestamp DESC")
+	// Get query parameters
+	user1 := c.QueryParam("user1")
+	user2 := c.QueryParam("user2")
+
+	// Validate query parameters
+	if user1 == "" || user2 == "" {
+		return c.JSON(400, map[string]string{"error": "user1 and user2 are required"})
+	}
+
+	// Define a SQL query to fetch messages between two users
+	query := `
+		SELECT message_id, sender_id, receiver_id, content, timestamp, read 
+		FROM messages
+		WHERE 
+			(sender_id = $1 AND receiver_id = $2) OR 
+			(sender_id = $2 AND receiver_id = $1)
+		ORDER BY timestamp DESC
+	`
+
+	// Query on the Database to fetch the row
+	rows, err := conn.Query(context.Background(), query, user1, user2)
 	if err != nil {
 		log.Printf("Failed to read messages: %v\n", err) // Debug log
 		return c.JSON(500, map[string]string{"error": "Failed to fetch messages"})
