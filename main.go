@@ -117,35 +117,41 @@ func main() {
 
 //! sendMessage (Using Redis Streams) - working
 func sendMessage(c echo.Context) error {
-	var msg Message
+	var msg Message  //  Declares a msg variable of type Message.
+	// Binds the incoming JSON request body to the msg struct.
 	if err := c.Bind(&msg); err != nil {
-		return c.JSON(400, map[string]string{"error": "Invalid input"})
+		return c.JSON(400, map[string]string{"error": "Invalid input"}) // return 400 error if binding fails
 	}
 
+	// Checks if required fields are missing or empty
 	if msg.SenderID == "" || msg.ReceiverID == "" || msg.Content == "" {
 		return c.JSON(400, map[string]string{"error": "Invalid message data"})
 	}
 
+	// Generates a new UUID
 	id := uuid.New().String()
 
-	// Add to Redis Stream (instead of List)
+	// A Redis Stream is like a log where messages are stored in order.
+	// Adds an entry to a Redis stream. (instead of List)
 	_, err := redisCli.XAdd(ctx, &redis.XAddArgs{
 		Stream: "message_stream",
-		Values: map[string]interface{}{
+		Values: map[string]interface{}{ // Key-value pairs representing the message data.
 			"message_id":   id,
 			"sender_id":    msg.SenderID,
 			"receiver_id":  msg.ReceiverID,
 			"content":      msg.Content,
 			"timestamp":    time.Now().Format(time.RFC3339),
-			"read":         false,
+			"read":         false,  //  Marks the message as unread initially.
 		},
 	}).Result()
-
+	
+	//  If XAdd fails → Returns 500 (Internal Server Error) with an error message.
 	if err != nil {
 		return c.JSON(500, map[string]string{"error": "Failed to add message to stream"})
 	}
 	
 	log.Printf("Message queued with ID: %s\n", id)
+	// Returns 200 (OK) status with a success message.
 	return c.JSON(200, map[string]string{"status": "Message queued"})
 }
 
@@ -155,8 +161,8 @@ func getMessages(c echo.Context) error {
 	log.Println("Starting to read messages from database...") // Debug log
 
 	// Get query parameters
-	user1 := c.QueryParam("user1")
-	user2 := c.QueryParam("user2")
+	user1 := c.QueryParam("user1") // Extracts user1 from the query string (e.g., /messages?user1=123&user2=456).
+	user2 := c.QueryParam("user2") // similarly for user2
 
 	// Validate query parameters
 	if user1 == "" || user2 == "" {
@@ -164,6 +170,7 @@ func getMessages(c echo.Context) error {
 	}
 
 	// Define a SQL query to fetch messages between two users
+	// $1, $2 – Parameter placeholders for user1 and user2 to prevent SQL injection.
 	query := `
 		SELECT message_id, sender_id, receiver_id, content, timestamp, read 
 		FROM messages
@@ -179,11 +186,12 @@ func getMessages(c echo.Context) error {
 		log.Printf("Failed to read messages: %v\n", err) // Debug log
 		return c.JSON(500, map[string]string{"error": "Failed to fetch messages"})
 	}
-	defer rows.Close()
+	defer rows.Close() //  Ensures the rows object is closed after the function completes to avoid memory leaks.
 
 	// Fetch the messages and store them in a slice of Message structs.
 	var messages []Message
 
+	//! loop through query results
 	for rows.Next() {
 		var msg Message
 
@@ -214,7 +222,7 @@ func getMessages(c echo.Context) error {
 //! Handles marking a message as read - working
 func markMessageAsRead(c echo.Context) error {
 	// Extract the message ID from the request URL
-	messageID := c.Param("id")
+	messageID := c.Param("id") // If the URL is /messages/123/read, messageID becomes "123".
 	
 	log.Printf("Marking message %s as read\n", messageID)
 
@@ -241,20 +249,21 @@ func markMessageAsRead(c echo.Context) error {
 	return c.JSON(200, map[string]string{"status": "Message marked as read"})
 }
 
-// //! Handles deleting a message - working
+// //! Handles deleting a message from the DB - working
 func deleteMessage(c echo.Context) error {
 	// fetch the id from the parameter passed during the request
 	id := c.Param("id")
 
 	// SQL query to delete the message by ID
 	query := `DELETE FROM messages WHERE message_id = $1` // $1 is a positional placeholder used in PostgreSQL for parameterized queries.
+	
 	result, err := conn.Exec(context.Background(), query, id) //  binds the id value to $1 safely (prevents SQL Injection)
 	if err != nil {
 		log.Printf("Failed to delete message: %v", err)
 		return c.JSON(500, map[string]string{"error": "Failed to delete message"})
 	}
 
-	// Check if any rows were affected
+	// Check if any rows were affected, if not return an error
 	if result.RowsAffected() == 0 {
 		return c.JSON(404, map[string]string{"error": "Message not found"})
 	}
@@ -301,11 +310,14 @@ func deleteMessage(c echo.Context) error {
 
 
 //! Worker for Redis Streams
+// This function reads messages from a Redis stream, 
+// processes them, inserts them into PostgreSQL,
+// and sends an acknowledgment (ACK) back to Redis.
 func startWorker() {
 
 	log.Println("Starting Redis stream worker...")
 
-	// Create Consumer Group (if not exists)
+	// Create Consumer Group (if not exists)  // (ctx,name_of_redis_stream, name_of_consumer_group,start reading from the latest message)
 	_, err := redisCli.XGroupCreateMkStream(ctx, "message_stream", "message_group", "$").Result()
 	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
 		log.Fatalf("Failed to create consumer group: %v", err)
@@ -321,6 +333,7 @@ func startWorker() {
 			Count:    1,
 		}).Result()
 
+		//! If reading fails, it logs the error and continues to the next loop.
 		if err != nil {
 			log.Printf("Failed to read from stream: %v", err)
 			continue
@@ -330,9 +343,10 @@ func startWorker() {
 			for _, message := range stream.Messages {
 				// This point is right after messages are fetched from Redis but before they're inserted into PostgreSQL.
 				fmt.Println("\nReceived message from stream: ", message)
-
+				
+				// Extract message data from the Redis message
 				messageID := message.ID
-				senderID := message.Values["sender_id"].(string)
+				senderID := message.Values["sender_id"].(string) // converts value from interface{} into string
 				receiverID := message.Values["receiver_id"].(string)
 				content := message.Values["content"].(string)
 				timestamp := message.Values["timestamp"].(string)
@@ -349,7 +363,7 @@ func startWorker() {
 					log.Printf("✅ Message inserted into DB with ID: %s\n", messageID)
 				}
 
-				// Acknowledge the message after processing
+				// Acknowledge the message after processing to Redis
 				_, err = redisCli.XAck(ctx, "message_stream", "message_group", messageID).Result()
 				if err != nil {
 					log.Printf("Failed to ACK message: %v", err)
