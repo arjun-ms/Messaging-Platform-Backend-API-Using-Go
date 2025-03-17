@@ -115,7 +115,7 @@ PUT /messages/abc-123/delivered
 - **Example Response:**
 ```json
 {
-  "message": "Message status updated to delivered"
+  "message": "Message status updated to `delivered`"
 }
 ```
 
