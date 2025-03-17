@@ -4,6 +4,7 @@ Welcome to the **Messaging Platform Backend API** project! This backend service 
 
 ## Table of Contents
 
+- [Demo](#demo)
 - [Features](#features)
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
@@ -11,6 +12,11 @@ Welcome to the **Messaging Platform Backend API** project! This backend service 
   - [Configuration](#configuration)
 - [Usage](#usage)
 - [API Documentation](#api-documentation)
+
+## Demo
+
+<div style="position: relative; padding-bottom: 56.25%; height: 0;"><iframe src="https://www.loom.com/embed/aa24d1f6a65d4c01ba9b8c37bc79cd1b?sid=cd8af047-168d-4a18-8a99-67cb45d852a1" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></iframe></div>
+
 
 ## Features
 
