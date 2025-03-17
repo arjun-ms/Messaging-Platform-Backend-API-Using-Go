@@ -16,7 +16,7 @@ import (
 
 // Global connections
 var (
-	conn     *pgx.Conn  // db connection
+	conn     *pgx.Conn  // db connection (pointer to a single connection)
 	redisCli *redis.Client // redis connection
 	ctx      = context.Background() // Global context used to manage request-scoped values, deadlines, and cancellation signals.
 )
@@ -28,7 +28,7 @@ type Message struct {
 	SenderID     string    `json:"sender_id"`
 	ReceiverID   string    `json:"receiver_id"`
 	Content      string    `json:"content"`
-	Timestamp    time.Time `json:"-"`    // Timestamp is skipped when converting to JSON because it's not needed in the response directly.
+	Timestamp    time.Time `json:"-"`    // Timestamp is skipped when converting to JSON because it's not needed in the response directly. // This will NOT appear in the JSON output
 	TimestampStr string    `json:"timestamp"` // Instead, TimestampStr is used to convert it into a readable string format before sending it to the client.
 	Read         bool      `json:"read"`
 	Status       string    `json:"status"`      // New field for message status
@@ -37,7 +37,8 @@ type Message struct {
 
 func main() {
 	//! Connect to PostgreSQL
-	var err error
+	var err error // Declare an error variable
+	
 	connString := "postgres://postgres:7591achu@localhost:5432/messaging" // Connection string to postgres
 	conn, err = pgx.Connect(context.Background(), connString)
 	if err != nil {
@@ -66,15 +67,15 @@ func main() {
 
 	//-----------------------------------------------
 
-	// Initialize Echo (for handling HTTP requests)
+	//! Initialize Echo (for handling HTTP requests)
 	e := echo.New() // sets up a lightweight HTTP server.
  
-	// Define routes
+	//! Define routes
 	e.GET("/messages", getMessages)
 
 	e.POST("/messages", sendMessage)
-	e.PATCH("/messages/:id/read", markMessageAsRead)
-	e.PUT("/messages/:id/delivered", markMessageAsDelivered)
+	e.PATCH("/messages/:id/read", markMessageAsRead)  //Partially update a resource
+	e.PUT("/messages/:id/delivered", markMessageAsDelivered) //Completely update a resource
 
 	e.DELETE("/messages/:id", deleteMessage)
 
@@ -144,7 +145,7 @@ func getMessages(c echo.Context) error {
 		}
 
 		// ✅ Convert Timestamp to string format for JSON
-		msg.TimestampStr = msg.Timestamp.Format(time.RFC3339)
+		msg.TimestampStr = msg.Timestamp.Format(time.RFC3339)  //YYYY-MM-DDTHH:MM:SSZ
 
 		messages = append(messages, msg)
 		log.Printf("Fetched  Message: %+v", msg) // Debug log
@@ -203,7 +204,7 @@ func sendMessage(c echo.Context) error {
 
 //! markMessageAsDelivered - Update the message status to 'delivered'
 func markMessageAsDelivered(c echo.Context) error {
-    messageID := c.Param("id")
+    messageID := c.Param("id") // get `id` paramter value from the request
 
     // Update status to 'delivered'
     _, err := conn.Exec(context.Background(), "UPDATE messages SET status = $1 WHERE message_id = $2 AND status = $3", "delivered", messageID, "sent")
@@ -269,7 +270,7 @@ func deleteMessage(c echo.Context) error {
 
 
 //TODO: remove this if you dont need to show stopping Redis worker without stopping the main server
-var quit = make(chan struct{}) // Channel to signal when to stop the worker
+var quit = make(chan struct{}) // Create a unbuffered Channel that transmits an empty struct to signal when to stop the worker.
 
 //! Worker for Redis Streams
 // This function reads messages from a Redis stream, 
@@ -286,14 +287,14 @@ func startWorker() {
 	}
 
 	for {
-		//TODO:
+		//----------------------------------------------------------
 		select {
 		case <-quit:
 			log.Println("Stopping Redis stream worker...")
 			return // Exit the goroutine when quit signal is received
 
 		default:
-		//TODO:
+		//----------------------------------------------------------
 			// Read from the stream using a consumer group
 			streams, err := redisCli.XReadGroup(ctx, &redis.XReadGroupArgs{
 				Group:    "message_group",
@@ -370,7 +371,7 @@ func startWorker() {
 	}
 }
 
-//TODO Stop the worker gracefully
+//TODO: Stop the worker gracefully
 func stopWorker() {
 	close(quit) // Close the channel to stop the worker
 }
