@@ -31,6 +31,7 @@ type Message struct {
 	Timestamp    time.Time `json:"-"`    // Timestamp is skipped when converting to JSON because it's not needed in the response directly.
 	TimestampStr string    `json:"timestamp"` // Instead, TimestampStr is used to convert it into a readable string format before sending it to the client.
 	Read         bool      `json:"read"`
+	Status       string    `json:"status"`      // New field for message status
 }
 
 
@@ -46,7 +47,7 @@ func main() {
 	fmt.Println("Connected to PostgreSQL!")
 	fmt.Println()
 
-	//----------------------------------------------
+	//!----------------------------------------------
 
 	//! Connect to Redis
 	// create a new redis client
@@ -63,17 +64,28 @@ func main() {
 	fmt.Println("Connected to Redis!")
 	fmt.Println()
 
-	//----------------------------------------------
+	//-----------------------------------------------
 
 	// Initialize Echo (for handling HTTP requests)
 	e := echo.New() // sets up a lightweight HTTP server.
  
 	// Define routes
-	e.POST("/messages", sendMessage)
 	e.GET("/messages", getMessages)
+
+	e.POST("/messages", sendMessage)
 	e.PATCH("/messages/:id/read", markMessageAsRead)
+	e.PUT("/messages/:id/delivered", markMessageAsDelivered)
+
 	e.DELETE("/messages/:id", deleteMessage)
 
+	
+	//TODO: stop worker
+	e.POST("/stop-redis", func(c echo.Context) error {
+		stopWorker()
+		return c.JSON(200, map[string]string{"status": "Redis worker stopped"})
+	})
+	
+	
 
 	// Start worker in a separate goroutine
 	//! The go keyword starts the worker in a separate goroutine  (like a background thread).
@@ -82,77 +94,6 @@ func main() {
 
 	// Start Echo server at 8080 or Change to any free port 
 	e.Logger.Fatal(e.Start(":8080")) //  Fatal - If the server fails to start, logs an error and exits.
-}
-
-//! Handles sending a message (need asynchronous with a queue (redis Lists)) - working
-// func sendMessage(c echo.Context) error {
-// 	var msg Message
-
-// 	// Bind request body(JSON input) to msg struct
-// 	if err := c.Bind(&msg); err != nil {
-// 		return c.JSON(400, map[string]string{"error": "Invalid request body"})
-// 	}
-
-// 	// Input validation (Ensures sender_id, receiver_id, and content are not empty.)
-// 	if msg.SenderID == "" || msg.ReceiverID == "" || msg.Content == "" {
-// 		return c.JSON(400, map[string]string{"error": "Sender ID, Receiver ID, and Content are required"})
-// 	}
-
-// 	// Convert message to JSON for pushing into Redis ( Converts struct to JSON for easy storage.)
-// 	data, err := json.Marshal(msg)
-// 	if err != nil {
-// 		return c.JSON(500, map[string]string{"error": "Failed to process message"})
-// 	}
-
-// 	// Push to Redis queue
-// 	// LPush → Adds the message to the Redis list message_queue.
-// 	err = redisCli.LPush(context.Background(), "message_queue", data).Err()
-// 	if err != nil {
-// 		return c.JSON(500, map[string]string{"error": "Failed to queue message"})
-// 	}
-
-// 	return c.JSON(200, map[string]string{"status": "Message queued"})
-// }
-
-
-//! sendMessage (Using Redis Streams) - working
-func sendMessage(c echo.Context) error {
-	var msg Message  //  Declares a msg variable of type Message.
-	// Binds the incoming JSON request body to the msg struct.
-	if err := c.Bind(&msg); err != nil {
-		return c.JSON(400, map[string]string{"error": "Invalid input"}) // return 400 error if binding fails
-	}
-
-	// Checks if required fields are missing or empty
-	if msg.SenderID == "" || msg.ReceiverID == "" || msg.Content == "" {
-		return c.JSON(400, map[string]string{"error": "Invalid message data"})
-	}
-
-	// Generates a new UUID
-	id := uuid.New().String()
-
-	// A Redis Stream is like a log where messages are stored in order.
-	// Adds an entry to a Redis stream. (instead of List)
-	_, err := redisCli.XAdd(ctx, &redis.XAddArgs{
-		Stream: "message_stream",
-		Values: map[string]interface{}{ // Key-value pairs representing the message data.
-			"message_id":   id,
-			"sender_id":    msg.SenderID,
-			"receiver_id":  msg.ReceiverID,
-			"content":      msg.Content,
-			"timestamp":    time.Now().Format(time.RFC3339),
-			"read":         false,  //  Marks the message as unread initially.
-		},
-	}).Result()
-	
-	//  If XAdd fails → Returns 500 (Internal Server Error) with an error message.
-	if err != nil {
-		return c.JSON(500, map[string]string{"error": "Failed to add message to stream"})
-	}
-	
-	log.Printf("Message queued with ID: %s\n", id)
-	// Returns 200 (OK) status with a success message.
-	return c.JSON(200, map[string]string{"status": "Message queued"})
 }
 
 
@@ -219,6 +160,60 @@ func getMessages(c echo.Context) error {
 	return c.JSON(200, messages)
 }
 
+//! sendMessage (Using Redis Streams) - working
+func sendMessage(c echo.Context) error {
+	var msg Message  //  Declares a msg variable of type Message.
+	// Binds the incoming JSON request body to the msg struct.
+	if err := c.Bind(&msg); err != nil {
+		return c.JSON(400, map[string]string{"error": "Invalid input"}) // return 400 error if binding fails
+	}
+
+	// Checks if required fields are missing or empty
+	if msg.SenderID == "" || msg.ReceiverID == "" || msg.Content == "" {
+		return c.JSON(400, map[string]string{"error": "Invalid message data"})
+	}
+
+	// Generates a new UUID
+	id := uuid.New().String()
+
+	// A Redis Stream is like a log where messages are stored in order.
+	// Adds an entry to a Redis stream. (instead of List)
+	_, err := redisCli.XAdd(ctx, &redis.XAddArgs{
+		Stream: "message_stream",
+		Values: map[string]interface{}{ // Key-value pairs representing the message data.
+			"message_id":   id,
+			"sender_id":    msg.SenderID,
+			"receiver_id":  msg.ReceiverID,
+			"content":      msg.Content,
+			"timestamp":    time.Now().Format(time.RFC3339),
+			"read":         false,  //  Marks the message as unread initially.
+			"status":		"sent", // set status as sent
+		},
+	}).Result()
+	
+	//  If XAdd fails → Returns 500 (Internal Server Error) with an error message.
+	if err != nil {
+		return c.JSON(500, map[string]string{"error": "Failed to add message to stream"})
+	}
+	
+	log.Printf("Message queued with ID: %s\n", id)
+	// Returns 200 (OK) status with a success message.
+	return c.JSON(200, map[string]string{"status": "Message queued"})
+}
+
+//! markMessageAsDelivered - Update the message status to 'delivered'
+func markMessageAsDelivered(c echo.Context) error {
+    messageID := c.Param("id")
+
+    // Update status to 'delivered'
+    _, err := conn.Exec(context.Background(), "UPDATE messages SET status = $1 WHERE message_id = $2 AND status = $3", "delivered", messageID, "sent")
+    if err != nil {
+        return c.JSON(500, map[string]string{"error": err.Error()})
+    }
+
+    return c.JSON(200, map[string]string{"message": "Message status updated to delivered"})
+}
+
 //! Handles marking a message as read - working
 func markMessageAsRead(c echo.Context) error {
 	// Extract the message ID from the request URL
@@ -232,7 +227,7 @@ func markMessageAsRead(c echo.Context) error {
 	}
 
 	// Update the `read` status in the database
-	query := `UPDATE messages SET read = TRUE WHERE message_id = $1`
+	query := `UPDATE messages SET read = TRUE, status = 'read'  WHERE message_id = $1`
 	result, err := conn.Exec(context.Background(), query, messageID)
 	if err != nil {
 		log.Printf("Failed to update message status: %v\n", err)
@@ -249,7 +244,7 @@ func markMessageAsRead(c echo.Context) error {
 	return c.JSON(200, map[string]string{"status": "Message marked as read"})
 }
 
-// //! Handles deleting a message from the DB - working
+//! Handles deleting a message from the DB - working
 func deleteMessage(c echo.Context) error {
 	// fetch the id from the parameter passed during the request
 	id := c.Param("id")
@@ -272,42 +267,9 @@ func deleteMessage(c echo.Context) error {
 }
 
 
-//! Process messages from the Redis queue and store them in PostgreSQL (for redis List)
-// func startWorker() {
-// 	for {
-// 		// BRPop → Blocking pop to wait for new messages in the queue.
-// 		data, err := redisCli.BRPop(context.Background(), 0, "message_queue").Result()
-// 		if err != nil {
-// 			log.Printf("Failed to read from queue: %v\n", err)
-// 			continue
-// 		}
 
-// 		if len(data) < 2 {
-// 			continue
-// 		}
-
-// 		var msg Message
-// 		err = json.Unmarshal([]byte(data[1]), &msg)
-// 		if err != nil {
-// 			log.Printf("Failed to parse message: %v\n", err)
-// 			continue
-// 		}
-
-// 		// Insert into PostgreSQL
-// 		query := `INSERT INTO messages (sender_id, receiver_id, content, timestamp, read)
-// 		          VALUES ($1, $2, $3, $4, $5)`
-// 		_, err = conn.Exec(context.Background(), query, msg.SenderID, msg.ReceiverID, msg.Content, time.Now(), false)
-// 		if err != nil {
-// 			log.Printf("Failed to insert message into database: %v\n", err)
-// 			continue
-// 		}
-
-// 		fmt.Println("✅ Message stored in database:", msg)
-// 	}
-// }
-
-// !-----------------------------------------------------
-
+//TODO: remove this if you dont need to show stopping Redis worker without stopping the main server
+var quit = make(chan struct{}) // Channel to signal when to stop the worker
 
 //! Worker for Redis Streams
 // This function reads messages from a Redis stream, 
@@ -317,60 +279,98 @@ func startWorker() {
 
 	log.Println("Starting Redis stream worker...")
 
-	// Create Consumer Group (if not exists)  // (ctx,name_of_redis_stream, name_of_consumer_group,start reading from the latest message)
+	// Create Consumer Group (if not exists)
 	_, err := redisCli.XGroupCreateMkStream(ctx, "message_stream", "message_group", "$").Result()
 	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
 		log.Fatalf("Failed to create consumer group: %v", err)
 	}
 
 	for {
-		// Read from the stream using a consumer group
-		streams, err := redisCli.XReadGroup(ctx, &redis.XReadGroupArgs{
-			Group:    "message_group",
-			Consumer: "worker-1",
-			Streams:  []string{"message_stream", ">"},
-			Block:    0,
-			Count:    1,
-		}).Result()
+		//TODO:
+		select {
+		case <-quit:
+			log.Println("Stopping Redis stream worker...")
+			return // Exit the goroutine when quit signal is received
 
-		//! If reading fails, it logs the error and continues to the next loop.
-		if err != nil {
-			log.Printf("Failed to read from stream: %v", err)
-			continue
-		}
+		default:
+		//TODO:
+			// Read from the stream using a consumer group
+			streams, err := redisCli.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "message_group",
+				Consumer: "worker-1",
+				Streams:  []string{"message_stream", ">"},
+				Block:    0,
+				Count:    1,
+			}).Result()
 
-		for _, stream := range streams {
-			for _, message := range stream.Messages {
-				// This point is right after messages are fetched from Redis but before they're inserted into PostgreSQL.
-				fmt.Println("\nReceived message from stream: ", message)
-				
-				// Extract message data from the Redis message
-				messageID := message.ID
-				senderID := message.Values["sender_id"].(string) // converts value from interface{} into string
-				receiverID := message.Values["receiver_id"].(string)
-				content := message.Values["content"].(string)
-				timestamp := message.Values["timestamp"].(string)
+			if err != nil {
+				log.Printf("Failed to read from stream: %v", err)
+				continue
+			}
 
-				// Insert into PostgreSQL
-				_, err := conn.Exec(context.Background(),
-					"INSERT INTO messages (message_id, sender_id, receiver_id, content, timestamp, read) VALUES ($1, $2, $3, $4, $5, $6)",
-					messageID, senderID, receiverID, content, timestamp, false)
+			for _, stream := range streams {
+				for _, message := range stream.Messages {
+					// Extract message data from the Redis message
+					messageID := message.ID
+					senderID := message.Values["sender_id"].(string)
+					receiverID := message.Values["receiver_id"].(string)
+					content := message.Values["content"].(string)
+					timestamp := message.Values["timestamp"].(string)
+					status := message.Values["status"].(string)
 
-				if err != nil {
-					log.Printf("Failed to insert message: %v", err)
-					continue
-				}else{
-					log.Printf("✅ Message inserted into DB with ID: %s\n", messageID)
-				}
+					// ✅ Start a database transaction to ensure data consistency
+					tx, err := conn.Begin(context.Background())
+					if err != nil {
+						log.Printf("Failed to start transaction: %v", err)
+						continue
+					}
 
-				// Acknowledge the message after processing to Redis
-				_, err = redisCli.XAck(ctx, "message_stream", "message_group", messageID).Result()
-				if err != nil {
-					log.Printf("Failed to ACK message: %v", err)
-				}else {
-					log.Printf("✅ Message ACKed: %s\n", messageID)
+					// ✅ Insert into PostgreSQL (including status)
+					_, err = tx.Exec(context.Background(),
+						"INSERT INTO messages (message_id, sender_id, receiver_id, content, timestamp, read, status) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+						messageID, senderID, receiverID, content, timestamp, false, status)
+
+					if err != nil {
+						tx.Rollback(context.Background()) // Roll back if insertion fails
+						log.Printf("Failed to insert message: %v", err)
+						continue
+					} else {
+						log.Printf("✅ Message inserted into DB with ID: %s\n", messageID)
+					}
+
+					// ✅ Update status to 'delivered' after successful insertion
+					_, err = tx.Exec(context.Background(),
+						"UPDATE messages SET status = 'delivered' WHERE message_id = $1",
+						messageID)
+
+					if err != nil {
+						tx.Rollback(context.Background()) // Roll back if update fails
+						log.Printf("Failed to update message status to 'delivered': %v", err)
+						continue
+					} else {
+						log.Printf("✅ Message status updated to 'delivered': %s\n", messageID)
+					}
+
+					// ✅ Commit transaction if everything succeeded
+					if err = tx.Commit(context.Background()); err != nil {
+						log.Printf("Failed to commit transaction: %v", err)
+						continue
+					}
+
+					// ✅ Acknowledge the message after processing to Redis
+					_, err = redisCli.XAck(ctx, "message_stream", "message_group", messageID).Result()
+					if err != nil {
+						log.Printf("Failed to ACK message: %v", err)
+					} else {
+						log.Printf("✅ Message ACKed: %s\n", messageID)
+					}
 				}
 			}
 		}
 	}
+}
+
+//TODO Stop the worker gracefully
+func stopWorker() {
+	close(quit) // Close the channel to stop the worker
 }
